@@ -1,0 +1,16 @@
+# Requirements
+
+pandas
+numpy
+matplotlib
+python-dateutil
+jupyter
+
+
+## Progress log
+
+### Day 1 — Setup & Data exploration
+- Created project structure
+- Downloaded sample AIS CSV (`data/sample_ais_day1.csv`)
+- Explored data in `notebooks/day1_explore.ipynb`
+- Created `requirements.txt` and initialized repository
