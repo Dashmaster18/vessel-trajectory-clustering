@@ -1,0 +1,8 @@
+### Day 2 — Data cleaning
+- Implemented `src/preprocessing.py`
+- Cleaned sample dataset and saved example `results/cleaned_day2.csv`
+- Notebook: `notebooks/day2_cleaning.ipynb`
+
+### Day 3 — Trajectory construction
+- Built trajectory sequences grouped by `mmsi`
+- Notebook: `notebooks/day3_trajectories.ipynb` shows plots and methods
