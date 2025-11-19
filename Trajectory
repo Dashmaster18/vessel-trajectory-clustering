@@ -1,0 +1,9 @@
+# src/trajectory_utils.py
+import pandas as pd
+
+def build_trajectories(df):
+    trajectories = {}
+    for mmsi, g in df.groupby('mmsi'):
+        g_sorted = g.sort_values('timestamp')
+        trajectories[mmsi] = g_sorted
+    return trajectories
