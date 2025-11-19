@@ -1,0 +1,13 @@
+# src/preprocessing.py
+import pandas as pd
+
+def preprocess(filepath, save_clean_csv=None):
+    df = pd.read_csv(filepath)
+    df.columns = [c.lower() for c in df.columns]
+    # basic cleaning
+    df['timestamp'] = pd.to_datetime(df.get('timestamp') or df.get('time'), errors='coerce')
+    df = df.dropna(subset=['lat','lon','timestamp'])
+    df = df[(df.lat.between(-90,90)) & (df.lon.between(-180,180))]
+    if save_clean_csv:
+        df.to_csv(save_clean_csv, index=False)
+    return df
