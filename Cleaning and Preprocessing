@@ -6,3 +6,108 @@
 ### Day 3 — Trajectory construction
 - Built trajectory sequences grouped by `mmsi`
 - Notebook: `notebooks/day3_trajectories.ipynb` shows plots and methods
+
+
+
+CLEANING 
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+
+# ================================
+# 1. LOAD AIS DATA
+# ================================
+
+df = pd.read_csv('AIS FILE 2.csv')
+
+print("\n--- HEAD ---")
+print(df.head())
+
+print("\n--- INFO ---")
+print(df.info())
+
+print("\n--- DESCRIPTION ---")
+print(df.describe(include='all'))
+
+print("\n--- Missing Values ---")
+print(df.isnull().sum())
+
+# Drop missing rows (optional)
+df = df.dropna()
+
+# Remove duplicates
+print(f"\nDuplicates: {df.duplicated().sum()}")
+df = df.drop_duplicates()
+
+# ================================
+# 2. BASIC VISUALIZATION
+# ================================
+
+sns.set(style='whitegrid')
+
+# Histograms of numerical columns
+df.select_dtypes(include='number').hist(figsize=(15, 10), bins=20)
+plt.suptitle('Histograms of Numerical AIS Features', fontsize=16)
+plt.show()
+
+# ================================
+# 3. CORRELATION HEATMAP
+# ================================
+
+numerical_df = df.select_dtypes(include=['number'])
+
+plt.figure(figsize=(10, 8))
+sns.heatmap(numerical_df.corr(), annot=False, cmap='coolwarm')
+plt.title('Correlation Heatmap - AIS Numeric Features')
+plt.show()
+
+# ================================
+# 4. BOXPLOT OUTLIER CHECK
+# ================================
+
+for col in numerical_df.columns:
+    plt.figure(figsize=(10, 4))
+    sns.boxplot(x=df[col])
+    plt.title(f'Boxplot of {col}')
+    plt.show()
+
+# ================================
+# 5. PAIRPLOT
+# If dataset is large, sample it
+# ================================
+
+plot_df = df.sample(500) if len(df) > 500 else df
+
+# Choose a column for coloring (MMSI or vessel type if available)
+hue_col = None
+for c in df.columns:
+    if df[c].dtype == 'object':
+        hue_col = c
+        break
+
+sns.pairplot(plot_df, hue=hue_col)
+plt.show()
+
+# ================================
+# 6. PCA FOR FEATURE REDUCTION
+# ================================
+
+# Drop non-numeric columns for PCA
+X = df.select_dtypes(include=['number'])
+
+# Scale numeric features
+X_scaled = StandardScaler().fit_transform(X)
+
+# Compute PCA
+pca = PCA(n_components=2)
+X_pca = pca.fit_transform(X_scaled)
+
+# Plot PCA output
+plt.figure(figsize=(8, 6))
+sns.scatterplot(x=X_pca[:, 0], y=X_pca[:, 1])
+plt.title('PCA Projection of AIS Features')
+plt.xlabel('PC1')
+plt.ylabel('PC2')
+plt.show()
