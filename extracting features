@@ -1,0 +1,148 @@
+from google.colab import files
+import pandas as pd
+import numpy as np
+from geopy.distance import geodesic
+
+print("Upload your 3 cleaned AIS CSV files:")
+uploaded = files.upload()
+
+file_list = list(uploaded.keys())
+
+print("Files uploaded:", file_list)
+
+
+# ---------------------------------------------------------
+# AUTO-DETECT TIMESTAMP COLUMN
+# ---------------------------------------------------------
+def find_timestamp_column(df):
+    candidates = [
+        "timestamp", "Timestamp", "TIMESTAMP",
+        "time", "Time", "TIME",
+        "datetime", "DateTime", "DATETIME",
+        "BaseDateTime", "date_time", "DATE", "Date"
+    ]
+    for col in df.columns:
+        if col in candidates:
+            return col
+    raise ValueError("❌ No timestamp-like column found. Send your CSV header.")
+
+
+# ---------------------------------------------------------
+# DISTANCE FUNCTION
+# ---------------------------------------------------------
+def compute_distance(lat1, lon1, lat2, lon2):
+    return geodesic((lat1, lon1), (lat2, lon2)).meters
+
+
+# ---------------------------------------------------------
+# TURNING ANGLE
+# ---------------------------------------------------------
+def turning_angle(cog1, cog2):
+    angle = cog2 - cog1
+    return (angle + 180) % 360 - 180
+
+
+# ---------------------------------------------------------
+# FEATURE COMPUTATION
+# ---------------------------------------------------------
+def compute_features(df):
+
+    ts_col = find_timestamp_column(df)
+
+    df = df.sort_values(by=ts_col)
+
+    df["distance_m"] = 0.0
+    df["cog_change"] = 0.0
+    df["turn_angle"] = 0.0
+    df["speed_profile"] = df["SOG"]
+
+    for i in range(1, len(df)):
+        lat1, lon1 = df.iloc[i-1][["LAT", "LON"]]
+        lat2, lon2 = df.iloc[i][["LAT", "LON"]]
+
+        df.at[i, "distance_m"] = compute_distance(lat1, lon1, lat2, lon2)
+
+        cog1 = df.iloc[i-1]["COG"]
+        cog2 = df.iloc[i]["COG"]
+
+        df.at[i, "cog_change"] = abs(cog2 - cog1)
+        df.at[i, "turn_angle"] = turning_angle(cog1, cog2)
+
+    return df
+
+
+# ---------------------------------------------------------
+# PROCESS FILES
+# ---------------------------------------------------------
+all_feature_rows = []
+generated_files = []
+
+for file in file_list:
+    print(f"\nProcessing file: {file}")
+
+    df = pd.read_csv(file)
+
+    df_features = compute_features(df)
+
+    vessel_features = {
+        "MMSI": df_features["MMSI"].iloc[0],
+        "mean_speed": df_features["speed_profile"].mean(),
+        "max_speed": df_features["speed_profile"].max(),
+        "total_distance_m": df_features["distance_m"].sum(),
+        "mean_cog_change": df_features["cog_change"].mean(),
+        "mean_turn_angle": df_features["turn_angle"].mean()
+    }
+    all_feature_rows.append(vessel_features)
+
+    output_file = file.replace(".csv", "_features.csv")
+    df_features.to_csv(output_file, index=False)
+    generated_files.append(output_file)
+
+    print(f"Saved: {output_file}")
+
+
+# ---------------------------------------------------------
+# MERGED FEATURE MATRIX
+# ---------------------------------------------------------
+feature_matrix = pd.DataFrame(all_feature_rows)
+feature_matrix.to_csv("feature_matrix_all_vessels.csv", index=False)
+
+print("\nFinal clustering matrix saved.")
+
+
+
+
+
+
+
+
+
+
+
+
+from google.colab import files
+import pandas as pd
+
+print("Upload your 3 cleaned AIS CSV files again:")
+uploaded = files.upload()
+
+file_list = list(uploaded.keys())
+print("\nUploaded files:", file_list)
+
+for file in file_list:
+    print("\n====================================")
+    print("Checking:", file)
+    print("====================================")
+
+    df = pd.read_csv(file)
+
+    print("\nColumns:")
+    print(df.columns.tolist())
+
+    print("\nNumber of rows:", len(df))
+
+    print("\nFirst 5 rows:")
+    print(df.head())
+
+    print("\nMissing values per column:")
+    print(df.isnull().sum())
