@@ -1,0 +1,89 @@
+# =========================================================
+# SAFE DBSCAN FOR LARGE AIS FILES (NO CRASH VERSION)
+# =========================================================
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import DBSCAN
+from google.colab import files
+
+# =========================================================
+# 1. Upload file
+# =========================================================
+
+print("Upload your cleaned AIS CSV file")
+uploaded = files.upload()
+file_name = list(uploaded.keys())[0]
+
+# =========================================================
+# 2. Load data safely (only required columns)
+# =========================================================
+
+df = pd.read_csv(file_name, usecols=['LAT','LON','SOG'])
+
+print("Original size:", df.shape)
+
+# Convert to float32 to reduce memory
+df['LAT'] = df['LAT'].astype('float32')
+df['LON'] = df['LON'].astype('float32')
+df['SOG'] = df['SOG'].astype('float32')
+
+# =========================================================
+# 3. Filter bad values
+# =========================================================
+
+df = df[(df['LAT'].between(-90, 90)) & (df['LON'].between(-180, 180))]
+df = df[(df['SOG'] > 0) & (df['SOG'] < 30)]
+
+print("After filtering:", df.shape)
+
+# =========================================================
+# 4. SAMPLE the data (IMPORTANT to stop crash)
+# =========================================================
+
+# Take only 15% of data for DBSCAN
+df = df.sample(frac=0.15, random_state=42)
+
+print("After sampling:", df.shape)
+
+# =========================================================
+# 5. Prepare data
+# =========================================================
+
+X = df[['LAT','LON']]
+
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+# =========================================================
+# 6. RUN DBSCAN (optimized parameters)
+# =========================================================
+
+dbscan = DBSCAN(eps=0.25, min_samples=8, n_jobs=-1)
+df['Cluster'] = dbscan.fit_predict(X_scaled)
+
+print("Cluster result:")
+print(df['Cluster'].value_counts())
+
+# =========================================================
+# 7. PLOT GRAPH
+# =========================================================
+
+plt.figure(figsize=(10,8))
+plt.scatter(df['LON'], df['LAT'], c=df['Cluster'], s=2)
+plt.xlabel("Longitude")
+plt.ylabel("Latitude")
+plt.title("DBSCAN Vessel Routes (Optimized)")
+plt.show()
+
+# =========================================================
+# 8. SAVE FILE
+# =========================================================
+
+output_file = "dbscan_clustered_output_SAFE.csv"
+df.to_csv(output_file, index=False)
+files.download(output_file)
+
+print("✅ DONE without crashing")
