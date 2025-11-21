@@ -1,0 +1,127 @@
+# =========================================================
+# STEP 1 – Import Required Libraries
+# =========================================================
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from google.colab import files
+from sklearn.cluster import DBSCAN
+
+# =========================================================
+# STEP 2 – Upload your AIS / clustered data file
+# =========================================================
+
+print("Upload your AIS or clustered CSV file")
+uploaded = files.upload()
+
+filename = list(uploaded.keys())[0]
+df = pd.read_csv(filename)
+
+print("\nFile successfully loaded")
+print(df.head())
+
+# =========================================================
+# STEP 3 – Check Required Columns
+# =========================================================
+
+required = ["LAT", "LON"]
+
+for col in required:
+    if col not in df.columns:
+        raise Exception(f"{col} column not found. Please check your file.")
+
+# Use timestamp if available
+if "TIMESTAMP" in df.columns:
+    df['TIMESTAMP'] = pd.to_datetime(df['TIMESTAMP'])
+
+# =========================================================
+# STEP 4 – Run Clustering (DBSCAN)
+# =========================================================
+
+coords = df[['LAT', 'LON']].values
+
+dbscan = DBSCAN(eps=0.05, min_samples=15)
+df['cluster'] = dbscan.fit_predict(coords)
+
+print("\nTotal unique clusters found: ", len(set(df['cluster'])))
+
+# =========================================================
+# STEP 5 – Generate Route Shapes
+# =========================================================
+
+routes = []
+
+for c in df['cluster'].unique():
+    if c == -1:
+        continue  # ignore noise
+
+    cluster_data = df[df['cluster'] == c].copy()
+
+    if "TIMESTAMP" in cluster_data.columns:
+        cluster_data = cluster_data.sort_values("TIMESTAMP")
+
+    routes.append(cluster_data[['LAT','LON']].values)
+
+
+print("\nTotal Route Shapes Created: ", len(routes))
+
+# =========================================================
+# STEP 6 – Plot Clustered Routes
+# =========================================================
+
+plt.figure(figsize=(12,8))
+
+for route in routes:
+    lats = route[:,0]
+    lons = route[:,1]
+    plt.plot(lons, lats, alpha=0.6)
+
+plt.xlabel("Longitude")
+plt.ylabel("Latitude")
+plt.title("Clustered Vessel Routes")
+plt.grid(True)
+plt.show()
+
+# =========================================================
+# STEP 7 – Extract Main Navigational Patterns
+# =========================================================
+
+pattern_summary = []
+
+for c in df['cluster'].unique():
+    if c == -1:
+        continue
+
+    data = df[df['cluster'] == c]
+
+    record = {
+        "Cluster ID": c,
+        "Total Points": len(data),
+        "Avg Latitude": data["LAT"].mean(),
+        "Avg Longitude": data["LON"].mean()
+    }
+
+    if "SOG" in data.columns:
+        record["Avg Speed (knots)"] = data["SOG"].mean()
+
+    pattern_summary.append(record)
+
+patterns = pd.DataFrame(pattern_summary)
+
+print("\nMain Navigational Patterns (Summary):\n")
+print(patterns)
+
+# =========================================================
+# STEP 8 – Save Outputs
+# =========================================================
+
+df.to_csv("clustered_data.csv", index=False)
+patterns.to_csv("navigation_patterns.csv", index=False)
+
+print("\nFiles generated:")
+print("✅ clustered_data.csv")
+print("✅ navigation_patterns.csv")
+
+files.download("clustered_data.csv")
+files.download("navigation_patterns.csv")
