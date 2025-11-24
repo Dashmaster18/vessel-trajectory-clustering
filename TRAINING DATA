@@ -1,0 +1,102 @@
+
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import train_test_split
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+
+print("✅ Libraries loaded")
+
+
+df = pd.read_csv("DAY8_FINAL_WITH_PREDICTIONS.csv")
+print("✅ Data loaded:", df.shape)
+
+features = df[['LAT', 'LON', 'SOG', 'COG']]
+target_lat = df['LAT_next_actual']
+target_lon = df['LON_next_actual']
+
+# Normalize features
+scaler = MinMaxScaler()
+features_scaled = scaler.fit_transform(features)
+
+def create_sequences(X, y_lat, y_lon, time_steps=10):
+    Xs, ys = [], []
+    for i in range(len(X) - time_steps):
+        Xs.append(X[i:(i + time_steps)])
+        ys.append([y_lat.iloc[i + time_steps], y_lon.iloc[i + time_steps]])
+    return np.array(Xs), np.array(ys)
+
+X, y = create_sequences(features_scaled, target_lat, target_lon)
+
+print("✅ Sequences created:", X.shape, y.shape)
+
+X_train, X_val, y_train, y_val = train_test_split(
+    X, y, test_size=0.2, shuffle=False
+)
+
+print("✅ Split:")
+print("Train:", X_train.shape, "Validation:", X_val.shape)
+
+
+model = Sequential()
+
+model.add(LSTM(64, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])))
+model.add(Dropout(0.2))
+
+model.add(LSTM(32))
+model.add(Dropout(0.2))
+
+model.add(Dense(2))  # LAT & LON predicted
+
+model.compile(optimizer='adam', loss='mse')
+
+model.summary()
+
+history = model.fit(
+    X_train,
+    y_train,
+    epochs=25,
+    batch_size=32,
+    validation_data=(X_val, y_val)
+)
+
+plt.figure()
+plt.plot(history.history['loss'], label="Training Loss")
+plt.plot(history.history['val_loss'], label="Validation Loss")
+plt.title("Training vs Validation Loss")
+plt.xlabel("Epochs")
+plt.ylabel("Loss")
+plt.legend()
+plt.grid()
+plt.show()
+
+
+predicted = model.predict(X_val)
+
+# Convert predictions to DataFrame
+pred_df = pd.DataFrame(predicted, columns=['Predicted_LAT', 'Predicted_LON'])
+
+actual_df = pd.DataFrame(y_val, columns=['Actual_LAT', 'Actual_LON'])
+
+final_result = pd.concat([actual_df.reset_index(drop=True),
+                          pred_df.reset_index(drop=True)], axis=1)
+
+# Save predictions
+final_result.to_csv("DAY9_LSTM_PREDICTIONS.csv", index=False)
+print("✅ Predictions saved: DAY9_LSTM_PREDICTIONS.csv")
+
+print(final_result.head())
+
+# Simple clustering-based classification
+from sklearn.cluster import KMeans
+
+kmeans = KMeans(n_clusters=3)
+df['Route_Class'] = kmeans.fit_predict(features_scaled)
+
+df.to_csv("DAY9_ROUTE_CLASSIFIED.csv", index=False)
+
+print("✅ Route Classification Completed")
+print(df[['LAT','LON','Route_Class']].head())
