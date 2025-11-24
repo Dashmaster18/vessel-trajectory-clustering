@@ -1,0 +1,106 @@
+
+
+# STEP 0 - Install & Import
+!pip install tensorflow scikit-learn matplotlib pandas numpy
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.callbacks import EarlyStopping
+from google.colab import files
+import os
+
+print("Upload your cleaned AIS / trajectory CSV file now")
+uploaded = files.upload()
+
+filename = list(uploaded.keys())[0]
+print("File name detected:", filename)
+
+# Load file
+df = pd.read_csv(filename)
+
+print("\nFirst 5 rows:\n", df.head())
+print("\nColumns:\n", df.columns)
+
+
+required_cols = ['LAT', 'LON', 'SOG', 'COG']
+
+# Check columns exist
+for col in required_cols:
+    if col not in df.columns:
+        raise Exception(f"❌ Column '{col}' NOT found in your file!")
+
+data = df[required_cols].dropna()
+
+print("\n✅ Data selected successfully")
+print("Shape:", data.shape)
+
+scaler = MinMaxScaler()
+data_scaled = scaler.fit_transform(data)
+
+
+def create_sequences(data, seq_length=10):
+    X, y = [], []
+    for i in range(len(data) - seq_length):
+        X.append(data[i:i+seq_length])
+        y.append(data[i+seq_length][:2])  # Predict LAT, LON only
+    return np.array(X), np.array(y)
+
+SEQ_LEN = 10
+X, y = create_sequences(data_scaled, SEQ_LEN)
+
+print("\nSequence Input shape:", X.shape)
+print("Sequence Output shape:", y.shape)
+
+split = int(0.8 * len(X))
+X_train, X_test = X[:split], X[split:]
+y_train, y_test = y[:split], y[split:]
+
+print("\nTrain shape:", X_train.shape)
+print("Test shape:", X_test.shape)
+
+
+model = Sequential()
+
+model.add(LSTM(64, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])))
+model.add(Dropout(0.2))
+
+model.add(LSTM(32))
+model.add(Dense(16, activation='relu'))
+model.add(Dense(2))   # LAT & LON output
+
+model.compile(
+    optimizer='adam',
+    loss='mse',
+    metrics=['mae']
+)
+
+model.summary()
+
+early_stop = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+
+history = model.fit(
+    X_train, y_train,
+    validation_data=(X_test, y_test),
+    epochs=20,
+    batch_size=32,
+    callbacks=[early_stop]
+)
+
+
+plt.figure(figsize=(8,6))
+plt.plot(history.history['loss'], label="Train Loss")
+plt.plot(history.history['val_loss'], label="Validation Loss")
+plt.xlabel("Epochs")
+plt.ylabel("Loss")
+plt.title("Vessel Route Prediction - Training Graph")
+plt.legend()
+plt.grid()
+plt.show()
+
+model.save("vessel_route_model.h5")
+
+
