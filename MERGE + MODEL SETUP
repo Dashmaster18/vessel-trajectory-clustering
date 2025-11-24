@@ -1,0 +1,80 @@
+
+
+import pandas as pd
+import numpy as np
+import os
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from math import sqrt
+import folium
+from google.colab import files
+
+print("\n📤 PLEASE UPLOAD YOUR 3 CSV FILES NOW")
+uploaded = files.upload()   # choose your 3 cleaned files
+
+file_names = list(uploaded.keys())
+print("\n✅ Uploaded Files:", file_names)
+
+# Read all uploaded files
+dfs = []
+for file in file_names:
+    dfs.append(pd.read_csv(file))
+
+df = pd.concat(dfs, ignore_index=True)
+print("\n✅ Combined file shape:", df.shape)
+
+
+
+df = df.drop_duplicates()
+df = df.dropna()
+df = df[['LAT', 'LON', 'SOG', 'COG']]
+print("✅ After cleaning:", df.shape)
+
+df['LAT_next_actual'] = df['LAT'].shift(-1)
+df['LON_next_actual'] = df['LON'].shift(-1)
+
+df['LAT_pred'] = df['LAT'] + (df['SOG'] * 0.0001) * np.cos(np.radians(df['COG']))
+df['LON_pred'] = df['LON'] + (df['SOG'] * 0.0001) * np.sin(np.radians(df['COG']))
+
+df = df.dropna()
+
+print("\n✅ Prediction Created")
+
+mae_lat = mean_absolute_error(df['LAT_next_actual'], df['LAT_pred'])
+mae_lon = mean_absolute_error(df['LON_next_actual'], df['LON_pred'])
+
+rmse_lat = sqrt(mean_squared_error(df['LAT_next_actual'], df['LAT_pred']))
+rmse_lon = sqrt(mean_squared_error(df['LON_next_actual'], df['LON_pred']))
+
+print("\n📊 MODEL ERROR RESULTS")
+print("MAE Latitude :", mae_lat)
+print("MAE Longitude:", mae_lon)
+print("RMSE Latitude :", rmse_lat)
+print("RMSE Longitude:", rmse_lon)
+
+
+df.to_csv("DAY8_FINAL_WITH_PREDICTIONS.csv", index=False)
+print("\n✅ File saved as: DAY8_FINAL_WITH_PREDICTIONS.csv")
+
+
+m = folium.Map(location=[df.iloc[0]['LAT'], df.iloc[0]['LON']], zoom_start=7)
+
+# Actual route - blue
+for i in range(0, len(df), 10):
+    folium.CircleMarker(
+        [df.iloc[i]['LAT_next_actual'], df.iloc[i]['LON_next_actual']],
+        radius=2,
+        color="blue",
+        fill=True
+    ).add_to(m)
+
+# Predicted route - red
+for i in range(0, len(df), 10):
+    folium.CircleMarker(
+        [df.iloc[i]['LAT_pred'], df.iloc[i]['LON_pred']],
+        radius=2,
+        color="red",
+        fill=True
+    ).add_to(m)
+
+
+df.head()
