@@ -1,0 +1,305 @@
+# 0) Install required packages
+!pip install -q tensorflow scikit-learn matplotlib pandas numpy folium networkx
+
+# 1) Imports
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from math import radians, sin, cos, sqrt, atan2
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
+from sklearn.neighbors import NearestNeighbors
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.callbacks import EarlyStopping
+from google.colab import files
+import folium
+import networkx as nx
+import warnings
+warnings.filterwarnings("ignore")
+
+# 2) Upload CSV
+print("📤 Please upload your AIS CSV file (use the file provided).")
+uploaded = files.upload()
+fname = list(uploaded.keys())[0]
+print("Loaded file:", fname)
+
+df = pd.read_csv(fname)
+print("Initial shape:", df.shape)
+print("Columns:", df.columns.tolist())
+
+# 3) Auto-detect important columns
+def find_col(df, candidates):
+    cols = df.columns.tolist()
+    for c in candidates:
+        for col in cols:
+            if c.lower() in col.lower():
+                return col
+    return None
+
+mmsi_col = find_col(df, ['mmsi', 'MMSI'])
+lat_col  = find_col(df, ['lat', 'latitude'])
+lon_col  = find_col(df, ['lon', 'lng', 'longitude', 'long'])
+time_col = find_col(df, ['basedatetime', 'base_date_time', 'baseDateTime', 'base_datetime', 'timestamp', 'date_time'])
+speed_col= find_col(df, ['sog','speed','knots'])
+cog_col  = find_col(df, ['cog','course','courseoverground'])
+
+# Validate detections
+required = {'MMSI': mmsi_col, 'LAT': lat_col, 'LON': lon_col, 'DATETIME': time_col}
+missing = [k for k,v in required.items() if v is None]
+if missing:
+    raise Exception(f"Required column(s) not found in file: {missing} — please check column names.")
+
+print("\nDetected columns:")
+print("MMSI:", mmsi_col)
+print("LAT:", lat_col)
+print("LON:", lon_col)
+print("Datetime:", time_col)
+print("SPEED:", speed_col if speed_col else "Not found (will attempt without speed)")
+print("COG:", cog_col if cog_col else "Not found (COG will be filled with 0s if missing)")
+
+# 4) Preprocess columns
+# Convert BaseDateTime to datetime
+df[time_col] = pd.to_datetime(df[time_col], errors='coerce')
+df = df.dropna(subset=[time_col, lat_col, lon_col, mmsi_col])
+# If speed missing fill with median of SOG-like values or zeros
+if speed_col is None:
+    df['SOG_fill'] = 0.0
+    speed_col = 'SOG_fill'
+else:
+    df[speed_col] = pd.to_numeric(df[speed_col], errors='coerce')
+    df[speed_col] = df[speed_col].fillna(df[speed_col].median())
+
+# If COG missing, fill with 0
+if cog_col is None:
+    df['COG_fill'] = 0.0
+    cog_col = 'COG_fill'
+else:
+    df[cog_col] = pd.to_numeric(df[cog_col], errors='coerce')
+    df[cog_col] = df[cog_col].fillna(df[cog_col].median())
+
+# rename for consistency
+df = df.rename(columns={mmsi_col:'MMSI', lat_col:'LAT', lon_col:'LON', time_col:'BaseDateTime', speed_col:'SOG', cog_col:'COG'})
+
+# 5) Clean invalid values
+df = df[(df['LAT'].between(-90,90)) & (df['LON'].between(-180,180))]
+df = df[pd.to_numeric(df['SOG'], errors='coerce').notnull()]
+df['SOG'] = pd.to_numeric(df['SOG'])
+df = df[(df['SOG'] >= 0) & (df['SOG'] <= 50)]   # allow up to 50 knots, but you can tighten
+df = df.sort_values(['MMSI','BaseDateTime']).reset_index(drop=True)
+print("After cleaning shape:", df.shape)
+
+# Save cleaned dataset
+clean_file = "cleaned_aid_dataset.csv"
+df.to_csv(clean_file, index=False)
+print("Saved cleaned file:", clean_file)
+
+# 6) Build per-MMSI trajectories
+trajectories = {}
+for mmsi, g in df.groupby('MMSI'):
+    g_sorted = g.sort_values('BaseDateTime')
+    # keep only LAT,LON,SOG,COG as features
+    arr = g_sorted[['LAT','LON','SOG','COG']].to_numpy()
+    if len(arr) >= 6:  # need at least seq_len+1 (we use 5 steps -> need 6)
+        trajectories[mmsi] = {'data': arr, 'index': g_sorted.index.to_numpy()}
+
+print("Trajectories (MMSI) with length>=6:", len(trajectories))
+
+# 7) Normalize features for LSTM (MinMax on entire cleaned dataset)
+feature_cols = ['LAT','LON','SOG','COG']
+scaler = MinMaxScaler()
+df_scaled_features = scaler.fit_transform(df[feature_cols])
+# We'll map scaled values back when creating sequences, so build a scaled dataframe
+df_scaled = df.copy()
+df_scaled[feature_cols] = df_scaled_features
+
+# 8) Create 5-step sequences using per-MMSI continuity (ensures trajectories are vessel-specific)
+SEQ_LEN = 5
+X_list, y_list = [], []
+# We'll store corresponding index ranges for debugging or mapping
+for mmsi, info in df.groupby('MMSI'):
+    g = info.sort_values('BaseDateTime')
+    scaled = scaler.transform(g[feature_cols])
+    # Build sequences only if enough rows
+    for i in range(len(scaled) - SEQ_LEN):
+        X_list.append(scaled[i:i+SEQ_LEN])
+        y_list.append(scaled[i+SEQ_LEN][:2])  # predict LAT,LON (scaled)
+
+X = np.array(X_list)
+y = np.array(y_list)
+print("Total sequences created:", X.shape, y.shape)
+
+# 9) Train-test split (time-ordered, no shuffle)
+split_idx = int(0.8 * len(X))
+if split_idx <= 0:
+    raise Exception("Not enough sequences to train. Need more AIS data with continuous MMSI sequences.")
+X_train, X_test = X[:split_idx], X[split_idx:]
+y_train, y_test = y[:split_idx], y[split_idx:]
+print("Train sequences:", X_train.shape, "Test sequences:", X_test.shape)
+
+# 10) LSTM model (using 5-step sequences)
+from tensorflow.keras import backend as K
+K.clear_session()
+
+model = Sequential([
+    LSTM(64, return_sequences=True, input_shape=(SEQ_LEN, len(feature_cols))),
+    Dropout(0.2),
+    LSTM(32),
+    Dense(16, activation='relu'),
+    Dense(2)   # scaled LAT,LON
+])
+model.compile(optimizer='adam', loss='mse', metrics=['mae'])
+model.summary()
+
+es = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+
+hist = model.fit(X_train, y_train, validation_data=(X_test, y_test),
+                 epochs=25, batch_size=64, callbacks=[es], verbose=1)
+
+# Plot training history
+plt.figure(figsize=(8,5))
+plt.plot(hist.history['loss'], label='train loss')
+plt.plot(hist.history['val_loss'], label='val loss')
+plt.legend(); plt.grid(True); plt.title('LSTM Training Loss')
+plt.show()
+
+# Save model
+model.save("lstm_5step_model.h5")
+files.download("lstm_5step_model.h5")
+
+# 11) Shortest route: build graph from real AIS points and run Dijkstra
+# Convert df points into unique nodes (to reduce graph size, sample by rounding coordinates)
+# We'll create nodes from unique points after rounding to 5 decimal places (approx ~1m resolution)
+df_points = df[['LAT','LON']].copy()
+df_points['lat_r'] = df_points['LAT'].round(5)
+df_points['lon_r'] = df_points['LON'].round(5)
+df_points['node_id'] = df_points['lat_r'].astype(str) + "_" + df_points['lon_r'].astype(str)
+
+unique_nodes = df_points[['node_id','LAT','LON']].drop_duplicates().reset_index(drop=True)
+print("Unique nodes for graph:", unique_nodes.shape[0])
+
+# Build coordinates array
+coords = unique_nodes[['LAT','LON']].to_numpy()
+
+# Build k-NN graph (symmetric) using nearest neighbors
+k = 8
+nbrs = NearestNeighbors(n_neighbors=min(k+1, len(coords)), algorithm='ball_tree').fit(coords)
+distances, indices = nbrs.kneighbors(coords)
+
+# Haversine distance function (works with degrees)
+def haversine_km(a_lat, a_lon, b_lat, b_lon):
+    R = 6371.0
+    lat1 = radians(a_lat); lon1 = radians(a_lon)
+    lat2 = radians(b_lat); lon2 = radians(b_lon)
+    dlat = lat2 - lat1; dlon = lon2 - lon1
+    a = sin(dlat/2)**2 + cos(lat1)*cos(lat2)*sin(dlon/2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1-a))
+    return R * c
+
+# Build NetworkX graph
+G = nx.Graph()
+for i, row in unique_nodes.iterrows():
+    G.add_node(i, lat=row['LAT'], lon=row['LON'], node_id=row['node_id'])
+
+for i in range(len(coords)):
+    for j_idx in range(1, indices.shape[1]):  # skip 0 because that's the point itself
+        j = indices[i, j_idx]
+        if not G.has_edge(i, j):
+            a_lat, a_lon = coords[i]
+            b_lat, b_lon = coords[j]
+            d = haversine_km(a_lat, a_lon, b_lat, b_lon)
+            G.add_edge(i, j, weight=d)
+
+print("Graph nodes:", G.number_of_nodes(), "edges:", G.number_of_edges())
+
+# 12) Take user input for start/end coordinates (or set here)
+print("\nPlease enter start and end coordinates (decimal degrees).")
+try:
+    start_lat = float(input("Start latitude: "))
+    start_lon = float(input("Start longitude: "))
+    end_lat   = float(input("End latitude: "))
+    end_lon   = float(input("End longitude: "))
+except:
+    # fallback example coords (if user cancels or input not supported)
+    print("Invalid input. Using example coordinates (first and last points in dataset).")
+    start_lat, start_lon = coords[0]
+    end_lat, end_lon = coords[-1]
+
+# 13) Connect start and end to graph via their nearest nodes
+# Find nearest node to start and end
+def nearest_node_index(lat, lon, coords):
+    dists = np.array([haversine_km(lat,lon, a_lat, a_lon) for (a_lat,a_lon) in coords])
+    return int(dists.argmin()), float(dists.min())
+
+start_idx, start_dist = nearest_node_index(start_lat, start_lon, coords)
+end_idx, end_dist     = nearest_node_index(end_lat, end_lon, coords)
+
+# Add temporary nodes for start and end with edges to their k nearest neighbors
+temp_start = "START_NODE"
+temp_end   = "END_NODE"
+G.add_node(temp_start, lat=start_lat, lon=start_lon)
+G.add_node(temp_end, lat=end_lat, lon=end_lon)
+
+# connect start to its nearest neighbors (choose top 6)
+nbrs_for_start = NearestNeighbors(n_neighbors=min(6, len(coords))).fit(coords)
+d_s, idxs_s = nbrs_for_start.kneighbors([[start_lat, start_lon]])
+for j in idxs_s[0]:
+    d = haversine_km(start_lat, start_lon, coords[j][0], coords[j][1])
+    G.add_edge(temp_start, j, weight=d)
+
+nbrs_for_end = NearestNeighbors(n_neighbors=min(6, len(coords))).fit(coords)
+d_e, idxs_e = nbrs_for_end.kneighbors([[end_lat, end_lon]])
+for j in idxs_e[0]:
+    d = haversine_km(end_lat, end_lon, coords[j][0], coords[j][1])
+    G.add_edge(temp_end, j, weight=d)
+
+# 14) Shortest path via Dijkstra
+try:
+    path_nodes = nx.shortest_path(G, source=temp_start, target=temp_end, weight='weight')
+    # Filter out START_NODE and END_NODE to map to coordinates
+    path_coords = []
+    for n in path_nodes:
+        if n == temp_start:
+            path_coords.append((G.nodes[n]['lat'], G.nodes[n]['lon']))
+        elif n == temp_end:
+            path_coords.append((G.nodes[n]['lat'], G.nodes[n]['lon']))
+        else:
+            path_coords.append((G.nodes[n]['lat'], G.nodes[n]['lon']))
+    total_distance = 0.0
+    for i in range(len(path_coords)-1):
+        total_distance += haversine_km(path_coords[i][0], path_coords[i][1], path_coords[i+1][0], path_coords[i+1][1])
+    print(f"\n✅ Shortest path found with {len(path_coords)} points, total distance ~ {total_distance:.2f} km")
+except nx.NetworkXNoPath:
+    raise Exception("No path found between start and end using the available AIS graph points.")
+
+# 15) Plot shortest path with matplotlib
+lats_path = [p[0] for p in path_coords]
+lons_path = [p[1] for p in path_coords]
+
+plt.figure(figsize=(10,6))
+plt.plot(df['LON'], df['LAT'], '.', markersize=2, alpha=0.2, label='AIS points')
+plt.plot(lons_path, lats_path, '-o', color='red', linewidth=2, markersize=4, label='Shortest Path')
+plt.scatter([start_lon],[start_lat], color='green', s=80, label='Start', zorder=5)
+plt.scatter([end_lon],[end_lat], color='blue', s=80, label='End', zorder=5)
+plt.xlabel('Longitude'); plt.ylabel('Latitude'); plt.title('Shortest Route on AIS Graph')
+plt.legend(); plt.grid(True); plt.show()
+
+# 16) Create an interactive folium map and save
+m = folium.Map(location=[(start_lat+end_lat)/2, (start_lon+end_lon)/2], zoom_start=6)
+# Add AIS points (sampled for performance)
+for idx, row in df.sample(min(2000, len(df)), random_state=1).iterrows():
+    folium.CircleMarker(location=[row['LAT'], row['LON']], radius=1, opacity=0.4).add_to(m)
+
+# Add path polyline
+folium.PolyLine(locations=[(lat, lon) for (lat,lon) in path_coords], color='red', weight=3, opacity=0.8).add_to(m)
+folium.Marker([start_lat, start_lon], tooltip='Start', icon=folium.Icon(color='green')).add_to(m)
+folium.Marker([end_lat, end_lon], tooltip='End', icon=folium.Icon(color='blue')).add_to(m)
+
+map_file = "SHORTEST_ROUTE_MAP.html"
+m.save(map_file)
+print("✅ Interactive map saved:", map_file)
+files.download(map_file)
+
+# 17) Save outputs
+df.to_csv("cleaned_used_for_model.csv", index=False)
+files.download("cleaned_used_for_model.csv")
+print("\nAll done — cleaned data, LSTM model, and shortest route map saved. ✅")
